@@ -4,6 +4,7 @@ from mcp.server.fastmcp import FastMCP
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
+import re
 
 # Initialize FastMCP server
 mcp = FastMCP("weather")
@@ -156,22 +157,27 @@ async def chat(request: Request):
         # e.g. "alerts in CA"
         state = query.split()[-1].upper()
         result = await get_alerts(state)
-    elif query.lower().startswith("forecast for"):
-        # e.g. "forecast for 40.7 -74.0" or "forecast for NewYork"
+    elif (
+        query.lower().startswith("forecast for")
+        or query.lower().startswith("weather in")
+        or query.lower().startswith("weather for")
+    ):
+        # Accept 'forecast for', 'weather in', 'weather for' as synonyms
         parts = query.split()
+        if query.lower().startswith("forecast for"):
+            loc_start = 2
+        else:
+            loc_start = 2
         try:
             # Try lat/lon first
             lat, lon = float(parts[-2]), float(parts[-1])
-            # Try US NWS first
             nws_result = await get_forecast(lat, lon)
             if "Unable to fetch forecast data for this location." not in nws_result:
                 result = nws_result
             else:
-                # Fallback to global
                 result = await get_global_forecast(lat, lon)
         except Exception:
-            # Try state/city name
-            location = " ".join(parts[2:]).strip()
+            location = " ".join(parts[loc_start:]).strip()
             location_map = {
                 "alabama": (32.8067, -86.7911),
                 "alaska": (61.3707, -152.4044),
@@ -237,12 +243,10 @@ async def chat(request: Request):
                 else:
                     result = f"Unknown location '{location}'. Try: forecast for <lat> <lon> or forecast for <city/state> (e.g. NewYork)"
                     return JSONResponse({"response": result})
-            # Try US NWS first
             nws_result = await get_forecast(lat, lon)
             if "Unable to fetch forecast data for this location." not in nws_result:
                 result = nws_result
             else:
-                # Fallback to global
                 result = await get_global_forecast(lat, lon)
     elif query.lower().startswith("history for"):
         # e.g. "history for 40.7 -74.0"
@@ -253,7 +257,87 @@ async def chat(request: Request):
         except Exception:
             result = "Invalid coordinates. Use: history for <lat> <lon>"
     else:
-        result = "Try: alerts in <STATE>, forecast for <LAT> <LON>, or history for <LAT> <LON>"
+        # --- New: Flexible intent/location extraction for weather/forecast queries ---
+        # Try to match queries like "what is the weather in Texas?", "show me the weather for Paris", etc.
+        weather_pattern = re.compile(r"(weather|forecast)[^\w]*(in|for)?\s*([\w\s,.'-]+)", re.IGNORECASE)
+        match = weather_pattern.search(query)
+        if match:
+            location = match.group(3).strip(" ?.,")
+            if location:
+                location_map = {
+                    "alabama": (32.8067, -86.7911),
+                    "alaska": (61.3707, -152.4044),
+                    "arizona": (33.7298, -111.4312),
+                    "arkansas": (34.9697, -92.3731),
+                    "california": (36.7783, -119.4179),
+                    "colorado": (39.5501, -105.7821),
+                    "connecticut": (41.6032, -73.0877),
+                    "delaware": (38.9108, -75.5277),
+                    "florida": (27.9944, -81.7603),
+                    "georgia": (33.0406, -83.6431),
+                    "hawaii": (21.0943, -157.4983),
+                    "idaho": (44.2405, -114.4788),
+                    "illinois": (40.3495, -88.9861),
+                    "indiana": (39.8494, -86.2583),
+                    "iowa": (42.0115, -93.2105),
+                    "kansas": (38.5266, -96.7265),
+                    "kentucky": (37.6681, -84.6701),
+                    "louisiana": (31.1695, -91.8678),
+                    "maine": (44.6939, -69.3819),
+                    "maryland": (39.0639, -76.8021),
+                    "massachusetts": (42.2302, -71.5301),
+                    "michigan": (43.3266, -84.5361),
+                    "minnesota": (45.6945, -93.9002),
+                    "mississippi": (32.7416, -89.6787),
+                    "missouri": (38.4561, -92.2884),
+                    "montana": (46.9219, -110.4544),
+                    "nebraska": (41.1254, -98.2681),
+                    "nevada": (38.3135, -117.0554),
+                    "new hampshire": (43.4525, -71.5639),
+                    "new jersey": (40.2989, -74.5210),
+                    "new mexico": (34.8405, -106.2485),
+                    "new york": (40.7128, -74.0060),
+                    "north carolina": (35.6301, -79.8064),
+                    "north dakota": (47.5289, -99.7840),
+                    "ohio": (40.3888, -82.7649),
+                    "oklahoma": (35.5653, -96.9289),
+                    "oregon": (44.5720, -122.0709),
+                    "pennsylvania": (40.5908, -77.2098),
+                    "rhode island": (41.6809, -71.5118),
+                    "south carolina": (33.8569, -80.9450),
+                    "south dakota": (44.2998, -99.4388),
+                    "tennessee": (35.7478, -86.6923),
+                    "texas": (31.0545, -97.5635),
+                    "utah": (40.1500, -111.8624),
+                    "vermont": (44.0459, -72.7107),
+                    "virginia": (37.7693, -78.1700),
+                    "washington": (47.4009, -121.4905),
+                    "west virginia": (38.4912, -80.9546),
+                    "wisconsin": (44.2685, -89.6165),
+                    "wyoming": (42.7559, -107.3025),
+                    "district of columbia": (38.8974, -77.0268),
+                    # Common abbreviations
+                    "newyork": (40.7128, -74.0060),
+                }
+                coords = location_map.get(location.lower())
+                if coords:
+                    lat, lon = coords
+                else:
+                    coords = await geocode_location(location)
+                    if coords:
+                        lat, lon = coords
+                    else:
+                        result = f"Unknown location '{location}'. Try: forecast for <lat> <lon> or forecast for <city/state> (e.g. NewYork)"
+                        return JSONResponse({"response": result})
+                nws_result = await get_forecast(lat, lon)
+                if "Unable to fetch forecast data for this location." not in nws_result:
+                    result = nws_result
+                else:
+                    result = await get_global_forecast(lat, lon)
+            else:
+                result = "Please specify a location for the weather query."
+        else:
+            result = "Try: alerts in <STATE>, forecast for <LAT> <LON>, or history for <LAT> <LON>"
     return JSONResponse({"response": result})
 
 @mcp.tool()
