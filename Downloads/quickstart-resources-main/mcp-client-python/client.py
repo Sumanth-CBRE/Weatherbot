@@ -3,7 +3,7 @@ import os
 import json
 import requests
 import re
-from typing import Optional, Literal, Dict, Any, List
+from typing import Optional, Literal
 from contextlib import AsyncExitStack
 
 from mcp import ClientSession, StdioServerParameters
@@ -11,8 +11,6 @@ from mcp.client.stdio import stdio_client
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
-# Import OpenAI as an alternative
-from openai import OpenAI
 
 load_dotenv()  # load environment variables from .env
 
@@ -23,7 +21,7 @@ class MCPClient:
         self.exit_stack = AsyncExitStack()
         self.llm_provider = llm_provider
         self.anthropic = Anthropic() if llm_provider == "anthropic" else None
-        self.openai = OpenAI() if llm_provider == "openai" else None
+        # Remove OpenAI initialization
         self.llama_api_key = os.getenv("LLAMA_API_KEY", "")
         self.groq_api_key = os.getenv("GROQ_API_KEY", "")
 
@@ -57,7 +55,7 @@ class MCPClient:
         print("\nConnected to server with tools:", [tool.name for tool in tools])
 
     async def process_query(self, query: str) -> tuple:
-        """Process a query using available LLM (Claude, OpenAI, Llama, or Groq) and available tools"""
+        """Process a query using available LLM (Claude, Llama, or Groq) and available tools"""
         messages = [
             {
                 "role": "user",
@@ -81,7 +79,7 @@ class MCPClient:
         elif self.llm_provider == "groq":
             llm_response = await self._process_with_groq(query, messages, available_tools)
         else:
-            llm_response = await self._process_with_openai(query, messages, available_tools)
+            llm_response = "OpenAI provider is not supported in this project."
         # Find the last tool message content
         for m in reversed(messages):
             if m.get("role") == "tool":
@@ -144,85 +142,6 @@ class MCPClient:
 
         return "\n".join(final_text)
         
-    async def _process_with_openai(self, query: str, messages: list, available_tools: list) -> str:
-        """Process a query using OpenAI"""
-        # Print debugging information
-        print(f"Making API request to OpenAI with {len(available_tools)} tools available")
-        
-        # Convert MCP tools to OpenAI format
-        openai_tools = []
-        for tool in available_tools:
-            openai_tools.append({
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool["description"],
-                    "parameters": tool["input_schema"]
-                }
-            })
-            
-        try:
-            # Initial OpenAI API call
-            response = self.openai.chat.completions.create(
-                model="gpt-3.5-turbo",  # Using a standard OpenAI model
-                messages=messages,
-                tools=openai_tools,
-                tool_choice="auto",
-                max_tokens=1000
-            )
-        except Exception as e:
-            print(f"OpenAI API Error: {str(e)}")
-            return f"Sorry, I encountered an error when connecting to OpenAI: {str(e)}"
-
-        # Process response and handle tool calls
-        final_text = []
-        response_message = response.choices[0].message
-
-        if response_message.content:
-            final_text.append(response_message.content)
-            
-        # Handle tool calls if present
-        if response_message.tool_calls:
-            for tool_call in response_message.tool_calls:
-                tool_name = tool_call.function.name
-                tool_args = tool_call.function.arguments
-                
-                # Execute tool call
-                result = await self.session.call_tool(tool_name, tool_args)
-                final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
-
-                # Continue conversation with tool results
-                messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": tool_call.id,
-                            "type": "function", 
-                            "function": {"name": tool_name, "arguments": tool_args}
-                        }
-                    ]
-                })
-                
-                messages.append({
-                    "role": "tool",
-                    "content": result.content,
-                    "tool_call_id": tool_call.id
-                })
-
-                # Get next response from OpenAI
-                try:
-                    response = self.openai.chat.completions.create(
-                        model="gpt-3.5-turbo",
-                        messages=messages,
-                        max_tokens=1000
-                    )
-                    final_text.append(response.choices[0].message.content)
-                except Exception as e:
-                    final_text.append(f"Error getting follow-up response: {str(e)}")
-
-        return "\n".join(final_text)
-    
     async def _process_with_llama(self, query: str, messages: list, available_tools: list) -> str:
         """Process a query using Llama API"""
         # Print debugging information
